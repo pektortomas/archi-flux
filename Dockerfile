@@ -31,15 +31,23 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git ${COMFYUI_DIR} && \
     cd ${COMFYUI_DIR} && git checkout ${COMFYUI_REF} && \
     pip install -r requirements.txt
 
-# --- Custom nodes: Manager (for adding ControlNet nodes later) + ControlNet preprocessors ---
+# --- Custom nodes: Manager + ControlNet preprocessors + FLUX.2 Fun ControlNet ---
+# comfyui-flux2fun-controlnet wraps alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union (depth/canny/MLSD),
+# loaded via its OWN loader node (ComfyUI's native ControlNetLoader rejects this file).
 RUN cd ${COMFYUI_DIR}/custom_nodes && \
     git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git && \
     git clone --depth 1 https://github.com/Fannovel16/comfyui_controlnet_aux.git && \
+    git clone --depth 1 https://github.com/bryanmcguire/comfyui-flux2fun-controlnet.git && \
     pip install -r ComfyUI-Manager/requirements.txt && \
-    pip install -r comfyui_controlnet_aux/requirements.txt
+    pip install -r comfyui_controlnet_aux/requirements.txt && \
+    ( [ -f comfyui-flux2fun-controlnet/requirements.txt ] && \
+      pip install -r comfyui-flux2fun-controlnet/requirements.txt || true )
 
 # --- Helpers ---
 RUN pip install huggingface_hub
+
+# --- Bundled workflow (depth ControlNet + archviz), copied onto the volume at first boot ---
+COPY docker/workflows/ /opt/comfy-assets/workflows/
 
 # --- Entrypoint ---
 COPY docker/start.sh /start.sh

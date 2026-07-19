@@ -28,6 +28,17 @@ for d in output input user; do
   ln -sfn "${WORKSPACE}/comfyui/${d}" "${COMFYUI_DIR}/${d}"
 done
 
+# Drop bundled workflow(s) into the ComfyUI workflow browser (skip if already there)
+WF_DIR="${WORKSPACE}/comfyui/user/default/workflows"
+mkdir -p "${WF_DIR}"
+if [[ -d /opt/comfy-assets/workflows ]]; then
+  for wf in /opt/comfy-assets/workflows/*.json; do
+    [[ -e "$wf" ]] || continue
+    dst="${WF_DIR}/$(basename "$wf")"
+    [[ -f "$dst" ]] || cp "$wf" "$dst"
+  done
+fi
+
 # Point ComfyUI at the volume-backed model dirs
 cat > "${COMFYUI_DIR}/extra_model_paths.yaml" <<YAML
 runpod_volume:
@@ -69,6 +80,14 @@ dl "${HF_BASE}/text_encoders/mistral_3_small_flux2_${TEXT_ENCODER}.safetensors" 
 
 dl "${HF_BASE}/vae/flux2-vae.safetensors" \
    "${MODELS_DIR}/vae/flux2-vae.safetensors"
+
+# FLUX.2 Fun ControlNet Union (depth / canny / MLSD) for the Blender depth-pass workflow.
+# Loaded via the comfyui-flux2fun-controlnet node's own loader, NOT ComfyUI's native ControlNetLoader.
+# A newer "-2602" checkpoint also exists in the same folder if you want to try it.
+if [[ "${DOWNLOAD_CONTROLNET:-1}" == "1" ]]; then
+  dl "https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union/resolve/main/models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union.safetensors" \
+     "${MODELS_DIR}/controlnet/FLUX.2-dev-Fun-Controlnet-Union.safetensors"
+fi
 
 # ---------------------------------------------------------------------------
 # Optional extra downloads (e.g. ControlNet model when you're ready)

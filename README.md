@@ -11,10 +11,24 @@ the built-in ComfyUI-Manager when you're ready.
 
 - CUDA 12.4 + PyTorch (cu124) — native **FP8** on Ada/Hopper (L40S / H100)
 - ComfyUI (native FLUX.2 nodes) + ComfyUI-Manager + ControlNet preprocessors
+- **FLUX.2 Fun ControlNet** node (`comfyui-flux2fun-controlnet`) baked in — depth / canny / MLSD
+- **Bundled turnkey workflow** `flux2-depth-archviz` — depth pass in, rendered design out
 - First-boot provisioning of:
   - `diffusion_models/flux2_dev_fp8mixed.safetensors`
   - `text_encoders/mistral_3_small_flux2_bf16.safetensors` (bf16 = best prompt adherence)
   - `vae/flux2-vae.safetensors`
+  - `controlnet/FLUX.2-dev-Fun-Controlnet-Union.safetensors`
+
+### Important: the ControlNet has its own loader
+
+The official base FLUX.2 workflow is text-to-image + multi-reference editing — it does **not**
+do proper depth-map ControlNet. For strict geometry from your Blender depth pass, use the
+**flux2fun** nodes: load the ControlNet with the node pack's **own "Load ControlNet" node**
+(ComfyUI's native `ControlNetLoader` rejects this file). Ready-to-use depth/canny workflows
+ship in the node's `examples/` folder — start there. Depth conditioning scale ~**0.65–0.80**.
+
+> This node is a fairly new community wrapper (confirmed working on fp8). Run a **mini-test on
+> 2–3 Blender depth passes first** to confirm geometry adherence before committing the full pipeline.
 
 ## 1. Build (GitHub Actions → GHCR)
 
@@ -51,24 +65,35 @@ Create a **Pod template** with:
 > **First boot downloads ~85 GB** (with bf16 encoder) to the volume — give it time. Every
 > later pod start on the same volume skips downloads and launches in seconds.
 
-## 3. Open ComfyUI
+## 3. Open ComfyUI — the workflow is already there
 
-Once the pod is running, open the **:8188** HTTP endpoint from the RunPod dashboard. Load
-the official FLUX.2 dev workflow (ComfyUI → Templates, or drag in the example workflow) —
-`UNETLoader` → `flux2_dev_fp8mixed`, `CLIPLoader` → the mistral encoder, `VAELoader` →
-`flux2-vae`.
+Once the pod is running, open the **:8188** HTTP endpoint from the RunPod dashboard. A ready
+depth-ControlNet archviz workflow is preloaded: **Workflows → `flux2-depth-archviz`**. It's
+wired end to end (FLUX.2 dev fp8 → mistral bf16 encoder → Fun ControlNet → sampler → save) with
+all model names already pointing at the provisioned files. To render:
 
-## 4. Adding ControlNet (next step)
+1. Open `flux2-depth-archviz`.
+2. In the **"Load Blender DEPTH pass"** node, upload your Blender depth render (grayscale, white = near, black = far).
+3. Edit the **Prompt** node to describe your design.
+4. Queue. Adjust ControlNet **strength 0.65–0.80** if geometry drifts; steps 35, CFG 4, euler.
 
-Two paths:
+Default canvas is landscape **1536×1024** (~1.6 MP) — change the `width`/`height` primitives to
+resize. The Fun ControlNet auto-detects the control type from the image, so a depth map needs no
+preprocessor; feed your Blender pass straight in. Canny/MLSD also work if you feed those instead.
 
-- **Nodes:** ComfyUI-Manager is preinstalled — use it to install the FLUX.2 Fun ControlNet
-  nodes, then restart.
-- **Model file:** drop the ControlNet weights onto the volume automatically by setting, e.g.:
-  ```
-  PROVISION_URLS="https://huggingface.co/<repo>/resolve/main/<file>.safetensors|controlnet/flux2_fun_controlnet_union.safetensors"
-  ```
-  It lands in `/workspace/models/controlnet/` and shows up in ComfyUI.
+## 4. ControlNet details
+
+Everything needed is included: the **node** (`comfyui-flux2fun-controlnet`, baked in), the
+**model** (auto-downloaded to `/workspace/models/controlnet/`), and the **workflow** (section 3).
+The ControlNet loads via the pack's own *Load Flux2 Fun ControlNet* node (ComfyUI's native
+`ControlNetLoader` rejects this file — that's expected, the bundled workflow already uses the
+correct node).
+
+Set `DOWNLOAD_CONTROLNET=0` to skip the ControlNet download (t2i only). To try the newer
+`-2602` checkpoint, add via `PROVISION_URLS`:
+```
+PROVISION_URLS="https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union/resolve/main/models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors|controlnet/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors"
+```
 
 ## 5. Adding LoRAs (later)
 
@@ -87,4 +112,3 @@ block in the workflow and set `COMFYUI_REF=<commit-sha>`.
   commercial use needs a separate agreement with Black Forest Labs.
 - Base CUDA image tag is a build arg (`CUDA_IMAGE`) — change it if your target driver needs a
   different CUDA.
-# archi-flux
