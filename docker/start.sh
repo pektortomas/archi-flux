@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# NOTE: intentionally NOT using `set -e` — a failed model download must never
+# crash-loop the container. ComfyUI should always start so the pod is usable.
+set -uo pipefail
 
 # ---------------------------------------------------------------------------
 # Config (override via RunPod env vars)
@@ -16,6 +18,8 @@ echo "=================================================="
 echo " FLUX.2 dev ComfyUI  |  volume: ${WORKSPACE}"
 echo " text encoder: ${TEXT_ENCODER}"
 echo "=================================================="
+echo "==> Disk space (need ~150 GB free for bf16 encoder):"
+df -h "${WORKSPACE}" 2>/dev/null || df -h /
 
 # ---------------------------------------------------------------------------
 # Persist models + outputs + user data on the volume
@@ -56,19 +60,35 @@ runpod_volume:
 YAML
 
 # ---------------------------------------------------------------------------
-# Download helper (resumable, skips if present, optional HF token for gated repos)
+# Download helper — parallel (aria2c), resumable, retried, and NON-FATAL.
+# A failed download logs a warning and returns 1; it never exits the script.
 # ---------------------------------------------------------------------------
 dl() {
   local url="$1" out="$2"
   if [[ -f "$out" ]]; then
     echo "    [skip] $(basename "$out")"
-    return
+    return 0
   fi
   echo "    [get ] $(basename "$out")"
-  local auth=()
-  [[ -n "${HF_TOKEN:-}" ]] && auth=(--header "Authorization: Bearer ${HF_TOKEN}")
-  wget -q --show-progress -c "${auth[@]}" -O "${out}.part" "$url"
-  mv "${out}.part" "$out"
+  local dir file rc=1
+  dir="$(dirname "$out")"; file="$(basename "$out")"
+  if command -v aria2c >/dev/null 2>&1; then
+    local hdr=()
+    [[ -n "${HF_TOKEN:-}" ]] && hdr=(--header="Authorization: Bearer ${HF_TOKEN}")
+    aria2c -x16 -s16 -k1M --continue=true --max-tries=5 --retry-wait=10 \
+      --summary-interval=15 --console-log-level=warn \
+      "${hdr[@]}" -d "$dir" -o "${file}.part" "$url" && rc=0 || rc=$?
+  else
+    local wa=()
+    [[ -n "${HF_TOKEN:-}" ]] && wa=(--header "Authorization: Bearer ${HF_TOKEN}")
+    wget -c --tries=5 --waitretry=10 --show-progress "${wa[@]}" -O "${out}.part" "$url" && rc=0 || rc=$?
+  fi
+  if [[ $rc -eq 0 && -f "${out}.part" ]]; then
+    mv "${out}.part" "$out"
+    return 0
+  fi
+  echo "    [WARN] download FAILED (rc=$rc) — $(basename "$out"). Check disk space / network."
+  return 1
 }
 
 echo "==> Provisioning FLUX.2 core models (first boot only; ~85 GB with bf16 encoder)"
@@ -83,10 +103,11 @@ dl "${HF_BASE}/vae/flux2-vae.safetensors" \
 
 # FLUX.2 Fun ControlNet Union (depth / canny / MLSD) for the Blender depth-pass workflow.
 # Loaded via the comfyui-flux2fun-controlnet node's own loader, NOT ComfyUI's native ControlNetLoader.
-# A newer "-2602" checkpoint also exists in the same folder if you want to try it.
+# Default = the -2602 checkpoint: authors' own notes say the plain version "performed poorly"
+# (lost CFG distillation after control training); -2602 fixed that + added Scribble/Gray. Public, no token.
 if [[ "${DOWNLOAD_CONTROLNET:-1}" == "1" ]]; then
-  dl "https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union/resolve/main/models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union.safetensors" \
-     "${MODELS_DIR}/controlnet/FLUX.2-dev-Fun-Controlnet-Union.safetensors"
+  dl "https://huggingface.co/alibaba-pai/FLUX.2-dev-Fun-Controlnet-Union/resolve/main/models/Personalized_Model/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors" \
+     "${MODELS_DIR}/controlnet/FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors"
 fi
 
 # ---------------------------------------------------------------------------
@@ -101,8 +122,20 @@ if [[ -n "${PROVISION_URLS:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Launch
+# Launch — always runs, even if a download failed (pod must not crash-loop)
 # ---------------------------------------------------------------------------
+missing=0
+for f in \
+  "${MODELS_DIR}/diffusion_models/flux2_dev_fp8mixed.safetensors" \
+  "${MODELS_DIR}/text_encoders/mistral_3_small_flux2_${TEXT_ENCODER}.safetensors" \
+  "${MODELS_DIR}/vae/flux2-vae.safetensors" ; do
+  [[ -f "$f" ]] || { echo "    [MISSING] $(basename "$f")"; missing=1; }
+done
+if [[ $missing -eq 1 ]]; then
+  echo "==> WARNING: some core models are missing (likely disk space). ComfyUI will still start,"
+  echo "    but generation needs those files. Increase Container Disk to ~150 GB and restart."
+fi
+
 echo "==> Starting ComfyUI: ${COMFY_ARGS}"
 cd "${COMFYUI_DIR}"
 exec python main.py ${COMFY_ARGS}

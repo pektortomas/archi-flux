@@ -884,7 +884,7 @@
         "Node name for S&R": "Flux2FunControlNetLoader"
       },
       "widgets_values": [
-        "FLUX.2-dev-Fun-Controlnet-Union.safetensors"
+        "FLUX.2-dev-Fun-Controlnet-Union-2602.safetensors"
       ]
     }
   ],
